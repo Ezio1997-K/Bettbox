@@ -1,4 +1,4 @@
-name: Build patched Windows test bundle
+name: Build isolated patched Windows dev bundle
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: patched-windows-test-${{ github.ref }}
+  group: patched-windows-dev-test-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-windows-x64:
-    name: Windows x64 unsigned test bundle
+    name: Windows x64 unsigned isolated dev bundle
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -74,51 +74,54 @@ jobs:
           dart run build_runner build -d
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build Core
+      - name: Build isolated Dev Core
         shell: pwsh
         run: |
-          dart setup.dart windows --arch amd64 --out core-only
+          dart setup.dart windows --arch amd64 --out core-only --dev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path -LiteralPath 'libclash/windows/BettboxCore.exe' -PathType Leaf)) {
-            throw 'BettboxCore.exe was not produced.'
+          if (-not (Test-Path -LiteralPath 'libclash/windows/BettboxDevCore.exe' -PathType Leaf)) {
+            throw 'BettboxDevCore.exe was not produced.'
           }
-          $coreHash = (Get-FileHash -LiteralPath 'libclash/windows/BettboxCore.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $coreHash = (Get-FileHash -LiteralPath 'libclash/windows/BettboxDevCore.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           "CORE_SHA256=$coreHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Core SHA256: $coreHash"
+          Write-Host "Dev Core SHA256: $coreHash"
 
-      - name: Build matching HelperService
+      - name: Build matching isolated Dev HelperService
         shell: pwsh
         run: |
-          dart setup.dart windows --arch amd64 --out helper --core-hash $env:CORE_SHA256
+          dart setup.dart windows --arch amd64 --out helper --core-hash $env:CORE_SHA256 --dev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path -LiteralPath 'libclash/windows/BettboxHelperService.exe' -PathType Leaf)) {
-            throw 'BettboxHelperService.exe was not produced.'
+          if (-not (Test-Path -LiteralPath 'libclash/windows/BettboxDevHelperService.exe' -PathType Leaf)) {
+            throw 'BettboxDevHelperService.exe was not produced.'
           }
-          $postHelperCoreHash = (Get-FileHash -LiteralPath 'libclash/windows/BettboxCore.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $postHelperCoreHash = (Get-FileHash -LiteralPath 'libclash/windows/BettboxDevCore.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($postHelperCoreHash -ne $env:CORE_SHA256) {
-            throw "Core changed while building HelperService: expected $env:CORE_SHA256, got $postHelperCoreHash"
+            throw "Dev Core changed while building Dev HelperService: expected $env:CORE_SHA256, got $postHelperCoreHash"
           }
 
-      - name: Build matching Bettbox app
+      - name: Build matching isolated Bettbox Dev app
         shell: pwsh
         run: |
+          # The existing Windows CMake project enables BETTBOX_DEV for the
+          # Debug configuration, matching the APP_DEV Dart identity below.
           $flutterArgs = @(
-            'build', 'windows', '--release', '--verbose',
+            'build', 'windows', '--debug', '--verbose',
             "--dart-define=CORE_SHA256=$env:CORE_SHA256",
+            '--dart-define=APP_DEV=true',
             '--dart-define=APP_ENV=pre',
-            '--dart-define=APP_ASSET_SUFFIX=windows-amd64-setup.exe'
+            '--dart-define=APP_ASSET_SUFFIX=windows-amd64-dev-test.zip'
           )
           flutter @flutterArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify complete bundle
+      - name: Verify complete isolated Dev bundle
         shell: pwsh
         run: |
-          $releaseDir = 'build/windows/x64/runner/Release'
+          $releaseDir = 'build/windows/x64/runner/Debug'
           $requiredFiles = @(
             'Bettbox.exe',
-            'BettboxCore.exe',
-            'BettboxHelperService.exe'
+            'BettboxDevCore.exe',
+            'BettboxDevHelperService.exe'
           )
           foreach ($name in $requiredFiles) {
             $path = Join-Path $releaseDir $name
@@ -126,17 +129,23 @@ jobs:
               throw "Missing required bundle file: $path"
             }
           }
-          $bundledCoreHash = (Get-FileHash -LiteralPath (Join-Path $releaseDir 'BettboxCore.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          foreach ($name in @('BettboxCore.exe', 'BettboxHelperService.exe')) {
+            $path = Join-Path $releaseDir $name
+            if (Test-Path -LiteralPath $path) {
+              throw "Production-identity binary leaked into isolated Dev bundle: $path"
+            }
+          }
+          $bundledCoreHash = (Get-FileHash -LiteralPath (Join-Path $releaseDir 'BettboxDevCore.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($bundledCoreHash -ne $env:CORE_SHA256) {
-            throw "Bundled Core hash mismatch: expected $env:CORE_SHA256, got $bundledCoreHash"
+            throw "Bundled Dev Core hash mismatch: expected $env:CORE_SHA256, got $bundledCoreHash"
           }
           Get-ChildItem -LiteralPath $releaseDir -File | Sort-Object Name | Select-Object Name, Length
 
-      - name: Upload unsigned portable bundle
+      - name: Upload unsigned isolated Dev bundle
         uses: actions/upload-artifact@v7
         with:
-          name: Bettbox-patched-windows-x64-${{ github.sha }}
-          path: build/windows/x64/runner/Release/
+          name: Bettbox-patched-dev-windows-x64-${{ github.sha }}
+          path: build/windows/x64/runner/Debug/
           if-no-files-found: error
           retention-days: 1
           compression-level: 6

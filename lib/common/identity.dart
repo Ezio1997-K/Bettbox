@@ -1,7 +1,14 @@
 const _useDevIdentity = bool.fromEnvironment('APP_DEV');
+const _useIsolatedSmoke = bool.fromEnvironment('APP_DEV_ISOLATED_SMOKE');
+const _isolatedSmokeMixedPort = int.fromEnvironment(
+  'APP_DEV_MIXED_PORT',
+  defaultValue: 17890,
+);
 
 class AppIdentity {
   static const isDev = _useDevIdentity;
+  static const isIsolatedSmoke = isDev && _useIsolatedSmoke;
+  static const isolatedSmokeMixedPort = _isolatedSmokeMixedPort;
 
   static const productName = 'Bettbox';
   static const devSuffix = 'Dev';

@@ -703,6 +703,7 @@ class AppController {
   }
 
   Future<void> autoUpdateProfiles() async {
+    if (AppIdentity.isIsolatedSmoke) return;
     for (final profile in _ref.read(profilesProvider)) {
       if (!profile.autoUpdate) continue;
       final isNotNeedUpdate = profile.lastUpdateDate
@@ -722,6 +723,7 @@ class AppController {
   }
 
   Future<void> checkAndUpdateMissedProfiles() async {
+    if (AppIdentity.isIsolatedSmoke) return;
     final now = DateTime.now();
     final profilesToUpdate = <Profile>[];
     for (final profile in _ref.read(profilesProvider)) {
@@ -952,6 +954,7 @@ class AppController {
         '${AppIdentity.mainExecutableName}.exe',
         enable,
       );
+      if (AppIdentity.isIsolatedSmoke) return;
       await helperClient.setProcessPriority(
         '${AppIdentity.coreExecutableName}.exe',
         enable,
@@ -986,7 +989,7 @@ class AppController {
         await prefs?.setBool('is_tun_running', false);
       }
       await savePreferences();
-      if (proxy != null) {
+      if (proxy != null && !AppIdentity.isIsolatedSmoke) {
         await proxy!.stopProxy();
       }
       await clashCore.shutdown();
@@ -1017,6 +1020,7 @@ class AppController {
   }
 
   Future<void> autoCheckUpdate() async {
+    if (AppIdentity.isIsolatedSmoke) return;
     final prefs = await preferences.sharedPreferencesCompleter.future;
     final lastCheckTime = prefs?.getInt('last_check_update_time') ?? 0;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -1227,7 +1231,9 @@ class AppController {
 
     await updateGroups();
 
-    autoLaunch?.updateStatus(_ref.read(appSettingProvider).autoLaunch);
+    if (!AppIdentity.isIsolatedSmoke) {
+      autoLaunch?.updateStatus(_ref.read(appSettingProvider).autoLaunch);
+    }
     autoUpdateProfiles();
     autoCheckUpdate();
 

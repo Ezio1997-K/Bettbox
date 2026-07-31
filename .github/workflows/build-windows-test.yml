@@ -1,4 +1,4 @@
-name: Build isolated patched Windows dev bundle
+name: Build patched Windows isolated smoke bundle
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: patched-windows-dev-test-${{ github.ref }}
+  group: patched-windows-isolated-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-windows-x64:
-    name: Windows x64 unsigned isolated dev bundle
+    name: Windows x64 unsigned isolated smoke bundle
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -108,8 +108,10 @@ jobs:
             'build', 'windows', '--debug', '--verbose',
             "--dart-define=CORE_SHA256=$env:CORE_SHA256",
             '--dart-define=APP_DEV=true',
+            '--dart-define=APP_DEV_ISOLATED_SMOKE=true',
+            '--dart-define=APP_DEV_MIXED_PORT=17890',
             '--dart-define=APP_ENV=pre',
-            '--dart-define=APP_ASSET_SUFFIX=windows-amd64-dev-test.zip'
+            '--dart-define=APP_ASSET_SUFFIX=windows-amd64-isolated-smoke.zip'
           )
           flutter @flutterArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -141,10 +143,10 @@ jobs:
           }
           Get-ChildItem -LiteralPath $releaseDir -File | Sort-Object Name | Select-Object Name, Length
 
-      - name: Upload unsigned isolated Dev bundle
+      - name: Upload unsigned isolated smoke bundle
         uses: actions/upload-artifact@v7
         with:
-          name: Bettbox-patched-dev-windows-x64-${{ github.sha }}
+          name: Bettbox-patched-isolated-smoke-windows-x64-${{ github.sha }}
           path: build/windows/x64/runner/Debug/
           if-no-files-found: error
           retention-days: 1

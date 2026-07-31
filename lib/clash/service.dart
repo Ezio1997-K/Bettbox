@@ -171,7 +171,7 @@ class ClashService extends ClashHandlerInterface {
         final environment = Map<String, String>.from(Platform.environment);
         environment['SAFE_PATHS'] = homeDirPath;
 
-        if (system.isWindows) {
+        if (system.isWindows && !AppIdentity.isIsolatedSmoke) {
           final serviceOk = await windows?.registerService() ?? false;
           if (serviceOk) {
             final started = await helperClient.startCore(
@@ -188,6 +188,11 @@ class ClashService extends ClashHandlerInterface {
               'Helper start core failed, falling back to normal mode',
             );
           }
+        }
+        if (system.isWindows && AppIdentity.isIsolatedSmoke) {
+          commonPrint.log(
+            'Isolated Dev smoke: skipping Helper service registration',
+          );
         }
 
         process = await Process.start(appPath.corePath, [
@@ -236,7 +241,7 @@ class ClashService extends ClashHandlerInterface {
   Future<void> _cleanupFailedCoreStart() async {
     _isDestroying = true;
     try {
-      if (system.isWindows) {
+      if (system.isWindows && !AppIdentity.isIsolatedSmoke) {
         try {
           await helperClient.stopCore().timeout(const Duration(seconds: 5));
         } catch (error) {
@@ -318,7 +323,7 @@ class ClashService extends ClashHandlerInterface {
   @override
   shutdown() async {
     _isDestroying = true;
-    if (system.isWindows) {
+    if (system.isWindows && !AppIdentity.isIsolatedSmoke) {
       await helperClient.stopCore();
     }
     await _destroySocket();

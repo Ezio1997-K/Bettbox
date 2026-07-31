@@ -1,3 +1,4 @@
+import 'package:bett_box/common/identity.dart';
 import 'package:bett_box/common/proxy.dart';
 import 'package:bett_box/models/models.dart';
 import 'package:bett_box/providers/state.dart';
@@ -15,6 +16,7 @@ class ProxyManager extends ConsumerStatefulWidget {
 
 class _ProxyManagerState extends ConsumerState<ProxyManager> {
   Future<void> _updateProxy(ProxyState proxyState) async {
+    if (AppIdentity.isIsolatedSmoke) return;
     final isStart = proxyState.isStart;
     final systemProxy = proxyState.systemProxy;
     final port = proxyState.port;

@@ -128,6 +128,41 @@ class GlobalState {
               : defaultClashConfig,
         );
     await globalState.migrateOldData(config);
+    if (AppIdentity.isIsolatedSmoke) {
+      final appSetting = config.appSetting;
+      List<DashboardWidget> withoutNetworkDetection(
+        List<DashboardWidget> widgets,
+      ) => widgets
+          .where((widget) => widget != DashboardWidget.networkDetection)
+          .toList();
+      config = config.copyWith(
+        profiles: config.profiles
+            .map((profile) => profile.copyWith(autoUpdate: false))
+            .toList(),
+        appSetting: appSetting.copyWith(
+          autoLaunch: false,
+          silentLaunch: false,
+          autoRun: false,
+          autoCheckUpdate: false,
+          minimizeOnExit: false,
+          enableHighPriority: false,
+          dashboardWidgets: withoutNetworkDetection(
+            appSetting.dashboardWidgets,
+          ),
+          desktopDashboardWidgets: withoutNetworkDetection(
+            appSetting.desktopDashboardWidgets,
+          ),
+        ),
+        networkProps: config.networkProps.copyWith(
+          systemProxy: false,
+          autoSetSystemDns: false,
+        ),
+        patchClashConfig: config.patchClashConfig.copyWith(
+          mixedPort: AppIdentity.isolatedSmokeMixedPort,
+          tun: config.patchClashConfig.tun.copyWith(enable: false),
+        ),
+      );
+    }
     final locale =
         utils.getLocaleForString(config.appSetting.locale) ??
         utils.getSystemLocale();
@@ -1138,6 +1173,7 @@ class DetectionState {
   }
 
   void startCheck({bool immediate = false}) {
+    if (AppIdentity.isIsolatedSmoke) return;
     final appState = globalState.appState;
     if (!appState.isInit) return;
 
@@ -1149,6 +1185,7 @@ class DetectionState {
   }
 
   void tryStartCheck() {
+    if (AppIdentity.isIsolatedSmoke) return;
     if (!state.value.isLoading &&
         state.value.ipInfo == null &&
         (_preIsStart == null || state.value.errorMessage != null)) {

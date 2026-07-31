@@ -26,7 +26,11 @@ static std::wstring GetDumpDirectory() {
   if (!dir.empty() && dir.back() != L'\\') {
     dir += L'\\';
   }
+#ifdef BETTBOX_DEV
+  dir += L"BettboxDev\\crash_dumps";
+#else
   dir += L"Bettbox\\crash_dumps";
+#endif
   return dir;
 }
 

@@ -1,0 +1,142 @@
+name: Build patched Windows test bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/core-lifecycle-mihomo-20260801
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patched-windows-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  SENTRY_BACKEND: none
+
+jobs:
+  build-windows-x64:
+    name: Windows x64 unsigned test bundle
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Enable Git long paths
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.x
+          cache-dependency-path: core/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.8
+          cache: true
+          cache-key: flutter-windows-amd64-${{ hashFiles('**/pubspec.lock') }}
+
+      # Keep this aligned with the Windows preparation in the upstream build.
+      - name: Prepare Windows Go dependency
+        shell: bash
+        run: |
+          cd core
+          SING_TUN_VERSION=$(grep -E 'github\.com/metacubex/sing-tun\s+v[^[:space:]]+' go.mod | awk '{print $2}')
+          echo "Detected sing-tun version: ${SING_TUN_VERSION}"
+          go mod download github.com/metacubex/sing-tun@${SING_TUN_VERSION}
+          MOD_CACHE=$(go env GOMODCACHE | tr '\\' '/')
+          FILE="${MOD_CACHE}/github.com/metacubex/sing-tun@${SING_TUN_VERSION}/tun_windows.go"
+          echo "Preparing ${FILE}"
+          chmod +w "${FILE}"
+
+      - name: Resolve Flutter dependencies and generators
+        shell: pwsh
+        run: |
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dart run build_runner build -d
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Core
+        shell: pwsh
+        run: |
+          dart setup.dart windows --arch amd64 --out core-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath 'libclash/windows/BettboxCore.exe' -PathType Leaf)) {
+            throw 'BettboxCore.exe was not produced.'
+          }
+          $coreHash = (Get-FileHash -LiteralPath 'libclash/windows/BettboxCore.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "CORE_SHA256=$coreHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Core SHA256: $coreHash"
+
+      - name: Build matching HelperService
+        shell: pwsh
+        run: |
+          dart setup.dart windows --arch amd64 --out helper --core-hash $env:CORE_SHA256
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath 'libclash/windows/BettboxHelperService.exe' -PathType Leaf)) {
+            throw 'BettboxHelperService.exe was not produced.'
+          }
+          $postHelperCoreHash = (Get-FileHash -LiteralPath 'libclash/windows/BettboxCore.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($postHelperCoreHash -ne $env:CORE_SHA256) {
+            throw "Core changed while building HelperService: expected $env:CORE_SHA256, got $postHelperCoreHash"
+          }
+
+      - name: Build matching Bettbox app
+        shell: pwsh
+        run: |
+          $flutterArgs = @(
+            'build', 'windows', '--release', '--verbose',
+            "--dart-define=CORE_SHA256=$env:CORE_SHA256",
+            '--dart-define=APP_ENV=pre',
+            '--dart-define=APP_ASSET_SUFFIX=windows-amd64-setup.exe'
+          )
+          flutter @flutterArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify complete bundle
+        shell: pwsh
+        run: |
+          $releaseDir = 'build/windows/x64/runner/Release'
+          $requiredFiles = @(
+            'Bettbox.exe',
+            'BettboxCore.exe',
+            'BettboxHelperService.exe'
+          )
+          foreach ($name in $requiredFiles) {
+            $path = Join-Path $releaseDir $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing required bundle file: $path"
+            }
+          }
+          $bundledCoreHash = (Get-FileHash -LiteralPath (Join-Path $releaseDir 'BettboxCore.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($bundledCoreHash -ne $env:CORE_SHA256) {
+            throw "Bundled Core hash mismatch: expected $env:CORE_SHA256, got $bundledCoreHash"
+          }
+          Get-ChildItem -LiteralPath $releaseDir -File | Sort-Object Name | Select-Object Name, Length
+
+      - name: Upload unsigned portable bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: Bettbox-patched-windows-x64-${{ github.sha }}
+          path: build/windows/x64/runner/Release/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 6

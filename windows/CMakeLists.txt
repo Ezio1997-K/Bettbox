@@ -6,6 +6,12 @@ project(Bettbox LANGUAGES CXX)
 # the on-disk name of your application.
 set(BINARY_NAME "Bettbox")
 
+# Keep the native Dev identity independent from the compiler configuration.
+option(BETTBOX_DEV_BUILD "Build Bettbox with the native Dev identity" OFF)
+if(DEFINED ENV{BETTBOX_DEV_BUILD})
+  set(BETTBOX_DEV_BUILD "$ENV{BETTBOX_DEV_BUILD}")
+endif()
+
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -91,25 +97,31 @@ set(CLASH_DIR "../libclash/windows")
 #   set(CLASH_DIR "../libclash/windows/x86")
 # endif()
 
-install(PROGRAMS "${CLASH_DIR}/BettboxCore.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  CONFIGURATIONS Profile;Release
-  COMPONENT Runtime)
+if(BETTBOX_DEV_BUILD)
+  install(PROGRAMS "${CLASH_DIR}/BettboxDevCore.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Debug;Profile;Release
+    COMPONENT Runtime)
 
-install(PROGRAMS "${CLASH_DIR}/BettboxDevCore.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  CONFIGURATIONS Debug
-  COMPONENT Runtime)
+  install(PROGRAMS "${CLASH_DIR}/BettboxDevHelperService.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Debug;Profile;Release
+    COMPONENT Runtime)
+else()
+  install(PROGRAMS "${CLASH_DIR}/BettboxDevCore.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Debug
+    COMPONENT Runtime)
 
-install(PROGRAMS "${CLASH_DIR}/BettboxDevHelperService.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  CONFIGURATIONS Debug
-  COMPONENT Runtime)
+  install(PROGRAMS "${CLASH_DIR}/BettboxDevHelperService.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Debug
+    COMPONENT Runtime)
 
-install(PROGRAMS "${CLASH_DIR}/BettboxCore.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  CONFIGURATIONS Profile;Release
-  COMPONENT Runtime)
+  install(PROGRAMS "${CLASH_DIR}/BettboxCore.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Profile;Release
+    COMPONENT Runtime)
 
-install(PROGRAMS "${CLASH_DIR}/BettboxHelperService.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  CONFIGURATIONS Profile;Release
-  COMPONENT Runtime)
+  install(PROGRAMS "${CLASH_DIR}/BettboxHelperService.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    CONFIGURATIONS Profile;Release
+    COMPONENT Runtime)
+endif()
 
 install(FILES "WindowsLoopbackManager.exe" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
@@ -133,4 +145,4 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
-
+

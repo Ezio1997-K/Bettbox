@@ -101,11 +101,12 @@ jobs:
 
       - name: Build matching isolated Bettbox Dev app
         shell: pwsh
+        env:
+          BETTBOX_DEV_BUILD: "ON"
         run: |
-          # The existing Windows CMake project enables BETTBOX_DEV for the
-          # Debug configuration, matching the APP_DEV Dart identity below.
+          # Keep the native Dev identity while compiling against the Release CRT.
           $flutterArgs = @(
-            'build', 'windows', '--debug', '--verbose',
+            'build', 'windows', '--release', '--verbose',
             "--dart-define=CORE_SHA256=$env:CORE_SHA256",
             '--dart-define=APP_DEV=true',
             '--dart-define=APP_DEV_ISOLATED_SMOKE=true',
@@ -119,7 +120,7 @@ jobs:
       - name: Verify complete isolated Dev bundle
         shell: pwsh
         run: |
-          $releaseDir = 'build/windows/x64/runner/Debug'
+          $releaseDir = 'build/windows/x64/runner/Release'
           $requiredFiles = @(
             'Bettbox.exe',
             'BettboxDevCore.exe',
@@ -141,13 +142,56 @@ jobs:
           if ($bundledCoreHash -ne $env:CORE_SHA256) {
             throw "Bundled Dev Core hash mismatch: expected $env:CORE_SHA256, got $bundledCoreHash"
           }
+
+          $appPath = Join-Path $releaseDir 'Bettbox.exe'
+          $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($appPath)
+          foreach ($property in @('ProductName', 'FileDescription')) {
+            if ($versionInfo.$property -ne 'Bettbox Dev') {
+              throw "Native Dev identity missing from ${property}: $($versionInfo.$property)"
+            }
+          }
+
+          $dumpbinCommand = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbinCommand) {
+            $dumpbinPath = $dumpbinCommand.Source
+          } else {
+            $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
+              throw "vswhere.exe not found: $vswherePath"
+            }
+            $installationPath = & $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $installationPath) {
+              throw 'Visual Studio C++ tools installation not found.'
+            }
+            $vcToolsDir = Get-ChildItem -LiteralPath (Join-Path $installationPath 'VC\Tools\MSVC') -Directory |
+              Sort-Object Name -Descending |
+              Select-Object -First 1
+            if (-not $vcToolsDir) {
+              throw 'MSVC tools directory not found.'
+            }
+            $dumpbinPath = Join-Path $vcToolsDir.FullName 'bin\Hostx64\x64\dumpbin.exe'
+          }
+          if (-not (Test-Path -LiteralPath $dumpbinPath -PathType Leaf)) {
+            throw "dumpbin.exe not found: $dumpbinPath"
+          }
+
+          $dependencies = & $dumpbinPath /DEPENDENTS $appPath 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "dumpbin failed with exit code $LASTEXITCODE"
+          }
+          $debugCrtPattern = '(?i)\b(?:MSVCP\d+D|VCRUNTIME\d+(?:_\d+)?D|ucrtbased)\.dll\b'
+          $debugCrtImports = [regex]::Matches($dependencies, $debugCrtPattern).Value | Sort-Object -Unique
+          if ($debugCrtImports.Count -gt 0) {
+            throw "Debug CRT import detected: $($debugCrtImports -join ', ')"
+          }
+
           Get-ChildItem -LiteralPath $releaseDir -File | Sort-Object Name | Select-Object Name, Length
 
       - name: Upload unsigned isolated smoke bundle
         uses: actions/upload-artifact@v7
         with:
           name: Bettbox-patched-isolated-smoke-windows-x64-${{ github.sha }}
-          path: build/windows/x64/runner/Debug/
+          path: build/windows/x64/runner/Release/
           if-no-files-found: error
           retention-days: 1
           compression-level: 6

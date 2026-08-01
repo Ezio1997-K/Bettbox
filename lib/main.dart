@@ -31,8 +31,8 @@ Future<void> main(List<String> args) async {
   if (system.isDesktop &&
       (args.contains('--exit') || args.contains('--restart'))) {
     final command = args.contains('--exit') ? 'exit' : 'restart';
-    await _sendControlCommand(command);
-    exit(0);
+    final sent = await _sendControlCommand(command);
+    exit(sent ? 0 : 1);
   }
 
   if (system.isDesktop) {
@@ -61,20 +61,21 @@ Future<void> main(List<String> args) async {
   await _runApp();
 }
 
-Future<void> _sendControlCommand(String command) async {
+Future<bool> _sendControlCommand(String command) async {
   for (int i = 0; i < 5; i++) {
     try {
       await ExternalControl.sendCommand(command);
       commonPrint.log('Sent $command command to running instance');
-      return;
+      return true;
     } catch (e) {
       if (i == 4) {
         commonPrint.log('Failed to send $command command: $e');
-        return;
+        return false;
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
   }
+  return false;
 }
 
 Future<void> _runApp() async {

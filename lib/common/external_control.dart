@@ -8,6 +8,8 @@ import 'package:bett_box/utils/platform_check.dart';
 import 'package:restart_app/restart_app.dart';
 
 class ExternalControl {
+  static const _commandTimeout = Duration(seconds: 2);
+
   static ServerSocket? _server;
   static TransportType? _transportType;
 
@@ -53,11 +55,20 @@ class ExternalControl {
 
   static void _listen() {
     _server!.listen(
-      (socket) => socket
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(_handleCommand),
+      (socket) {
+        socket
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen(
+              (command) => unawaited(_handleCommand(socket, command)),
+              onError: (e) {
+                commonPrint.log('ExternalControl command read error: $e');
+                socket.destroy();
+              },
+              cancelOnError: true,
+            );
+      },
       onError: (e) => commonPrint.log('ExternalControl server error: $e'),
     );
   }
@@ -86,6 +97,8 @@ class ExternalControl {
   static Future<void> sendCommand(String command) async {
     if (!system.isDesktop) return;
 
+    Object? lastError;
+
     // Prefer Unix Domain Socket when the socket file exists.
     final socketPath = await appPath.controlSocketPath;
     final socketType = FileSystemEntity.typeSync(socketPath);
@@ -93,7 +106,9 @@ class ExternalControl {
       try {
         await _sendUnixCommand(socketPath, command);
         return;
-      } catch (_) {}
+      } catch (e) {
+        lastError = e;
+      }
     }
 
     // Fall back to TCP loopback port file.
@@ -105,11 +120,17 @@ class ExternalControl {
         try {
           await _sendTcpCommand(port, command);
           return;
-        } catch (_) {}
+        } catch (e) {
+          lastError = e;
+        }
       }
     }
 
-    throw StateError('Bettbox is not running');
+    throw StateError(
+      lastError == null
+          ? 'Bettbox is not running'
+          : 'Bettbox control command was not acknowledged: $lastError',
+    );
   }
 
   static Future<void> _sendUnixCommand(
@@ -120,57 +141,72 @@ class ExternalControl {
     final socket = await Socket.connect(
       address,
       0,
-    ).timeout(const Duration(seconds: 1));
-    try {
-      socket.write('$command\n');
-      await socket.flush();
-    } on SocketException catch (e) {
-      if (!_isConnectionReset(e)) rethrow;
-    } finally {
-      try {
-        await socket.close();
-      } catch (_) {}
-    }
+    ).timeout(_commandTimeout);
+    await _exchangeCommand(socket, command);
   }
 
   static Future<void> _sendTcpCommand(int port, String command) async {
     final socket = await Socket.connect(
       InternetAddress.loopbackIPv4,
       port,
-    ).timeout(const Duration(seconds: 1));
+    ).timeout(_commandTimeout);
+    await _exchangeCommand(socket, command);
+  }
+
+  static Future<void> _exchangeCommand(Socket socket, String command) async {
     try {
       socket.write('$command\n');
-      await socket.flush();
-    } on SocketException catch (e) {
-      if (!_isConnectionReset(e)) rethrow;
+      await socket.flush().timeout(_commandTimeout);
+      final response = await socket
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .first
+          .timeout(_commandTimeout);
+      final expected = 'ok:$command';
+      if (response != expected) {
+        throw StateError('Unexpected control response: $response');
+      }
     } finally {
       try {
-        await socket.close();
-      } catch (_) {}
+        await socket.close().timeout(_commandTimeout);
+      } on TimeoutException {
+        socket.destroy();
+      } catch (_) {
+        socket.destroy();
+      }
     }
   }
 
-  static bool _isConnectionReset(SocketException e) {
-    final osError = e.osError;
-    if (osError == null) return false;
-    const resetMessages = [
-      'Connection reset by peer',
-      'Connection refused',
-      '远程主机强迫关闭了一个现有的连接',
-      'An existing connection was forcibly closed',
-    ];
-    return osError.errorCode == 10054 ||
-        resetMessages.any((m) => osError.message.contains(m));
+  static Future<void> _sendResponse(Socket socket, String response) async {
+    socket.write('$response\n');
+    await socket.flush().timeout(_commandTimeout);
+    try {
+      await socket.close().timeout(_commandTimeout);
+    } on TimeoutException {
+      socket.destroy();
+    }
   }
 
-  static void _handleCommand(String command) {
-    switch (command.trim()) {
+  static Future<void> _handleCommand(Socket socket, String command) async {
+    final normalized = command.trim();
+    final knownCommand = const {'exit', 'restart', 'show'}.contains(normalized);
+    try {
+      await _sendResponse(
+        socket,
+        knownCommand ? 'ok:$normalized' : 'error:unknown_command',
+      );
+    } catch (e) {
+      commonPrint.log('ExternalControl response failed: $e');
+    }
+
+    switch (normalized) {
       case 'exit':
-        globalState.appController.handleExit();
+        unawaited(globalState.appController.handleExit());
       case 'restart':
         Restart.restartApp();
       case 'show':
-        window?.show();
+        await window?.show();
       default:
         commonPrint.log('ExternalControl unknown command: $command');
     }

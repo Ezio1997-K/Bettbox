@@ -16,6 +16,8 @@ import 'package:path/path.dart' as p;
 
 class ClashService extends ClashHandlerInterface {
   static ClashService? _instance;
+  static const _socketCloseTimeout = Duration(seconds: 2);
+  static const _processExitTimeout = Duration(seconds: 2);
 
   Completer<ServerSocket> serverCompleter = Completer();
 
@@ -270,7 +272,11 @@ class ClashService extends ClashHandlerInterface {
   destroy() async {
     _isDestroying = true;
     final server = await serverCompleter.future;
-    await server.close();
+    try {
+      await server.close().timeout(_socketCloseTimeout);
+    } on TimeoutException {
+      commonPrint.log('Core IPC server close timed out during shutdown');
+    }
     await _deleteSocketFile();
     return true;
   }
@@ -315,20 +321,47 @@ class ClashService extends ClashHandlerInterface {
   Future<void> _destroySocket() async {
     if (socketCompleter.isCompleted) {
       final lastSocket = await socketCompleter.future;
-      await lastSocket.close();
-      socketCompleter = Completer();
+      try {
+        await lastSocket.close().timeout(_socketCloseTimeout);
+      } on TimeoutException {
+        commonPrint.log('Core IPC socket close timed out; destroying socket');
+        lastSocket.destroy();
+      } catch (error) {
+        if (!_isDestroying && !globalState.isExiting) rethrow;
+        commonPrint.log('Core IPC socket close failed during shutdown: $error');
+        lastSocket.destroy();
+      } finally {
+        socketCompleter = Completer();
+      }
     }
   }
 
   @override
   shutdown() async {
     _isDestroying = true;
-    if (system.isWindows && !AppIdentity.isIsolatedSmoke) {
-      await helperClient.stopCore();
-    }
-    await _destroySocket();
-    process?.kill();
+    final runningProcess = process;
     process = null;
+    if (system.isWindows && !AppIdentity.isIsolatedSmoke) {
+      try {
+        await helperClient.stopCore().timeout(const Duration(seconds: 5));
+      } catch (error) {
+        commonPrint.log('Failed to stop Core through Helper on exit: $error');
+      }
+    }
+    try {
+      await _destroySocket();
+    } finally {
+      if (runningProcess != null) {
+        runningProcess.kill();
+        await runningProcess.exitCode.timeout(
+          _processExitTimeout,
+          onTimeout: () {
+            runningProcess.kill(ProcessSignal.sigkill);
+            return -1;
+          },
+        );
+      }
+    }
     return true;
   }
 

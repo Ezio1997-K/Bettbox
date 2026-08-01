@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:bett_box/common/common.dart';
@@ -74,13 +75,15 @@ class Window {
 
   Future<void> close() async {
     try {
-      await trayManager.destroy();
+      await trayManager.destroy().timeout(const Duration(seconds: 2));
       commonPrint.log('The tray icon has been destroyed.');
+    } on TimeoutException {
+      commonPrint.log('Timed out destroying the tray icon during exit.');
     } catch (e) {
       commonPrint.log('Failed to destroy the tray icon: $e');
+    } finally {
+      exit(0);
     }
-
-    exit(0);
   }
 
   Future<void> hide() async {

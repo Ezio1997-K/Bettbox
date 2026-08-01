@@ -20,7 +20,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart';
 import 'package:synchronized/synchronized.dart';
-import 'package:tray_manager/tray_manager.dart';
 
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:yaml/yaml.dart';
@@ -31,6 +30,8 @@ import 'models/models.dart';
 import 'views/profiles/override_profile.dart';
 
 class AppController {
+  static const _exitCleanupTimeout = Duration(seconds: 8);
+
   int? lastProfileModified;
 
   final BuildContext context;
@@ -965,6 +966,22 @@ class AppController {
     }
   }
 
+  Future<void> _cleanupBeforeExit() async {
+    await globalState.handleBackground();
+    if (system.isDesktop) {
+      final prefs = await preferences.sharedPreferencesCompleter.future;
+      await prefs?.setBool('is_tun_running', false);
+    }
+    await savePreferences();
+    if (proxy != null && !AppIdentity.isIsolatedSmoke) {
+      await proxy!.stopProxy();
+    }
+    await clashCore.shutdown();
+    if (clashService != null) {
+      await clashService!.destroy();
+    }
+  }
+
   Future<void> handleExit() async {
     if (_exitLock != null) {
       return _exitLock!.future;
@@ -975,33 +992,24 @@ class AppController {
     globalState.isExiting = true;
 
     try {
-      if (system.isDesktop) {
-        try {
-          await trayManager.destroy();
-        } catch (e) {
-          commonPrint.log('Failed to destroy tray icon on exit: $e');
-        }
-      }
       stopWakelockAutoRecovery();
-      await globalState.handleBackground();
       if (system.isDesktop) {
-        final prefs = await preferences.sharedPreferencesCompleter.future;
-        await prefs?.setBool('is_tun_running', false);
+        await _cleanupBeforeExit().timeout(_exitCleanupTimeout);
+      } else {
+        await _cleanupBeforeExit();
       }
-      await savePreferences();
-      if (proxy != null && !AppIdentity.isIsolatedSmoke) {
-        await proxy!.stopProxy();
-      }
-      await clashCore.shutdown();
-      if (clashService != null) {
-        await clashService!.destroy();
-      }
+    } on TimeoutException {
+      commonPrint.log(
+        'Exit cleanup timed out after ${_exitCleanupTimeout.inSeconds}s',
+      );
     } catch (e) {
       commonPrint.log('handleExit error: $e');
     } finally {
       if (macOS != null) {
         try {
-          await macOS!.updateDns(true);
+          await macOS!.updateDns(true).timeout(_exitCleanupTimeout);
+        } on TimeoutException {
+          commonPrint.log('Timed out restoring macOS system DNS on exit');
         } catch (e) {
           commonPrint.log('Failed to restore macOS system DNS on exit: $e');
         }

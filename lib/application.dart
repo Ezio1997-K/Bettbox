@@ -70,12 +70,14 @@ class ApplicationState extends ConsumerState<Application>
     if (currentContext != null && currentContext != context) {
       globalState.appController = AppController(currentContext, ref);
     }
-    await globalState.appController.init();
+    // Keep desktop control available while first-run dialogs or other
+    // interactive initialization are waiting for user input.
     try {
       await ExternalControl.start();
     } catch (e) {
       commonPrint.log('ExternalControl start failed: $e');
     }
+    await globalState.appController.init();
     globalState.appController.initLink();
     if (system.isAndroid) {
       app.initShortcuts();

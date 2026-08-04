@@ -28,6 +28,17 @@ Future<void> main(List<String> args) async {
   globalState.isService = false;
   WidgetsFlutterBinding.ensureInitialized();
 
+  if (system.isDesktop && args.contains('--start')) {
+    if (!AppIdentity.isIsolatedSmoke) {
+      commonPrint.log(
+        'The start control command is only available to isolated smoke builds',
+      );
+      exit(2);
+    }
+    final sent = await _sendControlCommand('start');
+    exit(sent ? 0 : 1);
+  }
+
   if (system.isDesktop &&
       (args.contains('--exit') || args.contains('--restart'))) {
     final command = args.contains('--exit') ? 'exit' : 'restart';

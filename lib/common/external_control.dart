@@ -190,7 +190,9 @@ class ExternalControl {
 
   static Future<void> _handleCommand(Socket socket, String command) async {
     final normalized = command.trim();
-    final knownCommand = const {'exit', 'restart', 'show'}.contains(normalized);
+    final knownCommand =
+        const {'exit', 'restart', 'show'}.contains(normalized) ||
+        (normalized == 'start' && AppIdentity.isIsolatedSmoke);
     try {
       await _sendResponse(
         socket,
@@ -207,6 +209,8 @@ class ExternalControl {
         Restart.restartApp();
       case 'show':
         await window?.show();
+      case 'start' when AppIdentity.isIsolatedSmoke:
+        await globalState.appController.updateStatus(true);
       default:
         commonPrint.log('ExternalControl unknown command: $command');
     }

@@ -31,6 +31,8 @@ type GroupBase struct {
 	failedTimes       int
 	failedTime        time.Time
 	failedTesting     atomic.Bool
+	forcedCheckMux    sync.Mutex
+	lastForcedCheck   time.Time
 	testTimeout       int
 	maxFailedTimes    int
 	emptyFallback     C.Proxy
@@ -271,40 +273,68 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 		return
 	}
 
-	go func() {
-		if strings.Contains(err.Error(), "connection refused") {
-			fn()
-			return
-		}
-
-		gb.failedTestMux.Lock()
-		defer gb.failedTestMux.Unlock()
-
-		gb.failedTimes++
-		if gb.failedTimes == 1 {
-			log.Debugln("ProxyGroup: %s first failed", gb.Name())
-			gb.failedTime = time.Now()
-		} else {
-			if time.Since(gb.failedTime) > time.Duration(gb.testTimeout)*time.Millisecond {
-				gb.failedTimes = 0
-				return
-			}
-
-			log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
-			if gb.failedTimes >= gb.maxFailedTimes {
-				log.Warnln("because %s failed multiple times, activate health check", gb.Name())
-				fn()
-			}
-		}
-	}()
+	go gb.handleDialFailure(err, fn)
 }
 
-func (gb *GroupBase) healthCheck() {
-	if gb.failedTesting.Load() {
+func (gb *GroupBase) handleDialFailure(err error, fn func()) {
+	if strings.Contains(err.Error(), "connection refused") {
+		gb.tryForceHealthCheck(failureRecheckCooldown, fn)
 		return
 	}
 
-	gb.failedTesting.Store(true)
+	if gb.recordDialFailure() && gb.tryForceHealthCheck(failureRecheckCooldown, fn) {
+		log.Warnln("because %s failed multiple times, activate health check", gb.Name())
+	}
+}
+
+func (gb *GroupBase) recordDialFailure() bool {
+	gb.failedTestMux.Lock()
+	defer gb.failedTestMux.Unlock()
+
+	gb.failedTimes++
+	if gb.failedTimes == 1 {
+		log.Debugln("ProxyGroup: %s first failed", gb.Name())
+		gb.failedTime = time.Now()
+		return false
+	}
+
+	if time.Since(gb.failedTime) > time.Duration(gb.testTimeout)*time.Millisecond {
+		gb.failedTimes = 0
+		return false
+	}
+
+	log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
+	if gb.failedTimes < gb.maxFailedTimes {
+		return false
+	}
+
+	gb.failedTimes = 0
+	return true
+}
+
+// failureRecheckCooldown throttles failure-triggered full provider scans.
+// Scheduled provider checks are independent of this cooldown.
+const failureRecheckCooldown = 5 * time.Minute
+
+func (gb *GroupBase) tryForceHealthCheck(cooldown time.Duration, check func()) bool {
+	gb.forcedCheckMux.Lock()
+	if !gb.lastForcedCheck.IsZero() && time.Since(gb.lastForcedCheck) < cooldown {
+		gb.forcedCheckMux.Unlock()
+		return false
+	}
+	gb.lastForcedCheck = time.Now()
+	gb.forcedCheckMux.Unlock()
+
+	check()
+	return true
+}
+
+func (gb *GroupBase) healthCheck() {
+	if !gb.failedTesting.CompareAndSwap(false, true) {
+		return
+	}
+	defer gb.failedTesting.Store(false)
+
 	wg := sync.WaitGroup{}
 	for _, proxyProvider := range gb.providers {
 		wg.Add(1)
@@ -316,11 +346,11 @@ func (gb *GroupBase) healthCheck() {
 	}
 
 	wg.Wait()
-	gb.failedTesting.Store(false)
-	gb.failedTimes = 0
 }
 
 func (gb *GroupBase) onDialSuccess() {
+	gb.failedTestMux.Lock()
+	defer gb.failedTestMux.Unlock()
 	if !gb.failedTesting.Load() {
 		gb.failedTimes = 0
 	}

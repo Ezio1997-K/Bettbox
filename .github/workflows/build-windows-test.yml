@@ -74,6 +74,12 @@ jobs:
           dart run build_runner build -d
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Test Trojan fingerprint compatibility
+        shell: pwsh
+        run: |
+          flutter test test/common/proxy_config_test.dart
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build isolated Dev Core
         shell: pwsh
         run: |

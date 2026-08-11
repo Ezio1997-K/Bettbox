@@ -923,29 +923,10 @@ class GlobalState {
       rawConfig['proxy-groups'] = originalProxyGroups;
     }
 
-    final globalClientFingerprint = rawConfig['global-client-fingerprint'];
+    patchProxyClientFingerprints(rawConfig);
     if (rawConfig['proxies'] is List) {
-      final proxiesList = rawConfig['proxies'] as List;
-      for (final proxy in proxiesList) {
+      for (final proxy in rawConfig['proxies'] as List) {
         if (proxy is! Map) continue;
-
-        final type = proxy['type']?.toString().toLowerCase();
-        final isTls = proxy['tls'] == true;
-
-        bool supportClientFingerprint = false;
-        if (type == 'trojan' || type == 'anytls') {
-          supportClientFingerprint = true;
-        } else if ((type == 'vmess' || type == 'vless') && isTls) {
-          supportClientFingerprint = true;
-        }
-
-        if (supportClientFingerprint) {
-          if (globalClientFingerprint != null &&
-              proxy['client-fingerprint'] == null) {
-            proxy['client-fingerprint'] = globalClientFingerprint;
-          }
-        }
-
         final realityOpts = proxy['reality-opts'];
         if (realityOpts is Map) {
           final shortId = realityOpts['short-id'];

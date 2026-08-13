@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/callback"
@@ -20,6 +21,7 @@ type URLTestOption struct {
 
 type URLTest struct {
 	*GroupBase
+	selectionMux   sync.Mutex
 	selected       string
 	testUrl        string
 	expectedStatus string
@@ -49,7 +51,9 @@ func (u *URLTest) Set(name string) error {
 }
 
 func (u *URLTest) ForceSet(name string) {
+	u.selectionMux.Lock()
 	u.selected = name
+	u.selectionMux.Unlock()
 	u.fastSingle.Reset()
 }
 
@@ -102,6 +106,9 @@ func (u *URLTest) healthCheck() {
 
 func (u *URLTest) fast(touch bool) C.Proxy {
 	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
+		u.selectionMux.Lock()
+		defer u.selectionMux.Unlock()
+
 		proxies := u.GetProxies(touch)
 		if u.selected != "" {
 			for _, proxy := range proxies {
@@ -167,13 +174,16 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 	for _, proxy := range u.GetProxies(false) {
 		all = append(all, proxy.Name())
 	}
+	u.selectionMux.Lock()
+	selected := u.selected
+	u.selectionMux.Unlock()
 	return json.Marshal(map[string]any{
 		"type":           u.Type().String(),
 		"now":            u.Now(),
 		"all":            all,
 		"testUrl":        u.testUrl,
 		"expectedStatus": u.expectedStatus,
-		"fixed":          u.selected,
+		"fixed":          selected,
 		"hidden":         u.Hidden(),
 		"icon":           u.Icon(),
 		"emptyFallback":  u.EmptyFallback().Name(),

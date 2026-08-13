@@ -1,12 +1,14 @@
 package outboundgroup
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -194,6 +196,7 @@ type blockingHealthCheckProvider struct {
 	startedOnce sync.Once
 	releaseOnce sync.Once
 	calls       atomic.Int32
+	proxies     []C.Proxy
 }
 
 func (p *blockingHealthCheckProvider) Name() string               { return "test-provider" }
@@ -201,8 +204,8 @@ func (p *blockingHealthCheckProvider) VehicleType() P.VehicleType { return P.Com
 func (p *blockingHealthCheckProvider) Type() P.ProviderType       { return P.Proxy }
 func (p *blockingHealthCheckProvider) Initial() error             { return nil }
 func (p *blockingHealthCheckProvider) Update() error              { return nil }
-func (p *blockingHealthCheckProvider) Proxies() []C.Proxy         { return nil }
-func (p *blockingHealthCheckProvider) Count() int                 { return 0 }
+func (p *blockingHealthCheckProvider) Proxies() []C.Proxy         { return p.proxies }
+func (p *blockingHealthCheckProvider) Count() int                 { return len(p.proxies) }
 func (p *blockingHealthCheckProvider) Touch()                     {}
 func (p *blockingHealthCheckProvider) Version() uint32            { return 0 }
 func (p *blockingHealthCheckProvider) HealthCheckURL() string     { return "" }
@@ -269,4 +272,195 @@ func TestHealthCheckSuppressesConcurrentRuns(t *testing.T) {
 	}
 }
 
+type failingProxy struct {
+	*outbound.Base
+	dialError error
+}
+
+func (p *failingProxy) Adapter() C.ProxyAdapter { return p }
+func (p *failingProxy) AliveForTestUrl(string) bool {
+	return true
+}
+func (p *failingProxy) DelayHistory() []C.DelayHistory { return nil }
+func (p *failingProxy) ExtraDelayHistories() map[string]C.ProxyState {
+	return nil
+}
+func (p *failingProxy) LastDelayForTestUrl(string) uint16 { return 1 }
+func (p *failingProxy) URLTest(context.Context, string, utils.IntRanges[uint16]) (uint16, error) {
+	return 0, p.dialError
+}
+func (p *failingProxy) DialContext(context.Context, *C.Metadata) (C.Conn, error) {
+	return nil, p.dialError
+}
+
+func waitForFailureGateState(t *testing.T, description string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
+}
+
+func TestURLTestDialFailuresUseFailureHealthCheckCooldown(t *testing.T) {
+	dialError := errors.New("dial failed")
+	proxy := &failingProxy{
+		Base: outbound.NewBase(outbound.BaseOption{
+			Name: "failing-proxy",
+			Type: C.Vless,
+		}),
+		dialError: dialError,
+	}
+	provider := &blockingHealthCheckProvider{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		proxies: []C.Proxy{proxy},
+	}
+	t.Cleanup(provider.releaseChecks)
+	group, err := NewURLTest(
+		GroupCommonOption{
+			Name:           "test",
+			URL:            "https://health-check.invalid/generate_204",
+			TestTimeout:    5000,
+			MaxFailedTimes: 3,
+		},
+		URLTestOption{},
+		proxy,
+		[]P.ProxyProvider{provider},
+	)
+	if err != nil {
+		t.Fatalf("create URLTest group: %v", err)
+	}
+
+	dial := func() {
+		t.Helper()
+		_, err := group.DialContext(context.Background(), &C.Metadata{})
+		if !errors.Is(err, dialError) {
+			t.Fatalf("DialContext error = %v, want %v", err, dialError)
+		}
+	}
+
+	dial()
+	dial()
+	waitForFailureGateState(t, "the first two dial failures", func() bool {
+		return failedTimesForTest(group.GroupBase) == 2
+	})
+	dial()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("failure threshold did not trigger provider health check")
+	}
+	if actual := provider.calls.Load(); actual != 1 {
+		t.Fatalf("first failure burst ran %d provider checks, want 1", actual)
+	}
+
+	provider.releaseChecks()
+	waitForFailureGateState(t, "the first provider health check to finish", func() bool {
+		return !group.failedTesting.Load()
+	})
+
+	dial()
+	dial()
+	waitForFailureGateState(t, "the second pair of dial failures", func() bool {
+		return failedTimesForTest(group.GroupBase) == 2
+	})
+	dial()
+	waitForFailureGateState(t, "the second failure threshold", func() bool {
+		return failedTimesForTest(group.GroupBase) == 0
+	})
+	if actual := provider.calls.Load(); actual != 1 {
+		t.Fatalf("cooldown admitted %d provider checks, want 1", actual)
+	}
+}
+
+func newSelectionRaceTestProxies() []C.Proxy {
+	return []C.Proxy{
+		&failingProxy{
+			Base: outbound.NewBase(outbound.BaseOption{Name: "proxy-a", Type: C.Vless}),
+		},
+		&failingProxy{
+			Base: outbound.NewBase(outbound.BaseOption{Name: "proxy-b", Type: C.Vless}),
+		},
+	}
+}
+
+func exerciseConcurrentSelection(t *testing.T, selectProxy func(string), currentProxy func() string) {
+	t.Helper()
+	const iterations = 10_000
+	const readers = 8
+	start := make(chan struct{})
+	var concurrent sync.WaitGroup
+	concurrent.Add(1 + readers)
+	go func() {
+		defer concurrent.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			if i%2 == 0 {
+				selectProxy("proxy-a")
+			} else {
+				selectProxy("proxy-b")
+			}
+		}
+	}()
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer concurrent.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				if currentProxy() == "" {
+					t.Error("selection returned an empty proxy name")
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	concurrent.Wait()
+}
+
+func TestURLTestSelectionStateIsRaceFree(t *testing.T) {
+	proxies := newSelectionRaceTestProxies()
+	provider := &blockingHealthCheckProvider{proxies: proxies}
+	group, err := NewURLTest(
+		GroupCommonOption{Name: "test", URL: "https://health-check.invalid/generate_204"},
+		URLTestOption{},
+		proxies[0],
+		[]P.ProxyProvider{provider},
+	)
+	if err != nil {
+		t.Fatalf("create URLTest group: %v", err)
+	}
+
+	exerciseConcurrentSelection(t, func(name string) {
+		if err := group.Set(name); err != nil {
+			t.Errorf("select URLTest proxy %q: %v", name, err)
+		}
+	}, group.Now)
+}
+
+func TestFallbackSelectionStateIsRaceFree(t *testing.T) {
+	proxies := newSelectionRaceTestProxies()
+	provider := &blockingHealthCheckProvider{proxies: proxies}
+	group, err := NewFallback(
+		GroupCommonOption{Name: "test", URL: "https://health-check.invalid/generate_204"},
+		FallbackOption{},
+		proxies[0],
+		[]P.ProxyProvider{provider},
+	)
+	if err != nil {
+		t.Fatalf("create Fallback group: %v", err)
+	}
+
+	exerciseConcurrentSelection(t, func(name string) {
+		if err := group.Set(name); err != nil {
+			t.Errorf("select Fallback proxy %q: %v", name, err)
+		}
+	}, group.Now)
+}
+
 var _ P.ProxyProvider = (*blockingHealthCheckProvider)(nil)
+var _ C.Proxy = (*failingProxy)(nil)

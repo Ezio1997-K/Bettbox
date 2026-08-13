@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/callback"
@@ -17,6 +18,7 @@ type FallbackOption struct{}
 
 type Fallback struct {
 	*GroupBase
+	selectionMux   sync.Mutex
 	disableUDP     bool
 	testUrl        string
 	selected       string
@@ -83,13 +85,16 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 	for _, proxy := range f.GetProxies(false) {
 		all = append(all, proxy.Name())
 	}
+	f.selectionMux.Lock()
+	selected := f.selected
+	f.selectionMux.Unlock()
 	return json.Marshal(map[string]any{
 		"type":           f.Type().String(),
 		"now":            f.Now(),
 		"all":            all,
 		"testUrl":        f.testUrl,
 		"expectedStatus": f.expectedStatus,
-		"fixed":          f.selected,
+		"fixed":          selected,
 		"hidden":         f.Hidden(),
 		"icon":           f.Icon(),
 		"emptyFallback":  f.EmptyFallback().Name(),
@@ -103,6 +108,9 @@ func (f *Fallback) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 }
 
 func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
+	f.selectionMux.Lock()
+	defer f.selectionMux.Unlock()
+
 	proxies := f.GetProxies(touch)
 	for _, proxy := range proxies {
 		if len(f.selected) == 0 {
@@ -136,7 +144,9 @@ func (f *Fallback) Set(name string) error {
 		return errors.New("proxy not exist")
 	}
 
+	f.selectionMux.Lock()
 	f.selected = name
+	f.selectionMux.Unlock()
 	if !p.AliveForTestUrl(f.testUrl) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
 		defer cancel()
@@ -148,6 +158,8 @@ func (f *Fallback) Set(name string) error {
 }
 
 func (f *Fallback) ForceSet(name string) {
+	f.selectionMux.Lock()
+	defer f.selectionMux.Unlock()
 	f.selected = name
 }
 
